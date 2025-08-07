@@ -14,4 +14,4 @@ When operating automatically, it scans 1 square meter in a snake-like pattern.
 
 You can operate it manually with a joystick.
 
-There is an LCD screen on the controller. When our robot encounters an obstacle or metal while operating automatically or manually, it stops and sends a signal and coordinates to the controller.
+There is an LCD screen on the controller. When our robot encounters an obstacle or metal while operating automatically or manually, it stops and sends a signal and coordinates to the controller. Communication is facilitated by nrf24l01. Coordinates are obtained using the neo-7m GPS module.
