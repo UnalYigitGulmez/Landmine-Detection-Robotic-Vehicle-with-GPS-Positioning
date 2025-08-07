@@ -1,0 +1,99 @@
+// LANDMINE DETECTION ROBOT CONTROLLER
+
+#include <SPI.h>
+#include <LiquidCrystal.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+
+LiquidCrystal lcd(3, 4, 5, 6, 9, 10);
+
+#define CE_PIN 7
+#define CSN_PIN 8
+RF24 radio(CE_PIN, CSN_PIN);
+
+const byte address[6] = "EG123"; // transmitter address
+const byte address[6] = "EG321"; // receiver address
+
+const int xPin = A0;
+const int yPin = A1;
+const int SW_pin = 2;
+
+unsigned long lastAlertTime = 0;
+char currentAlert[32] = {0};
+bool alertActive = false;
+
+void setup(){
+  lcd.begin(20, 4);
+  lcd.setCursor(0, 0);
+  lcd.print("LCD is Ready!");
+
+  Serial.begin(9600);
+  pinMode(SW_pin, INPUT_PULLUP);
+
+  radio.begin();
+  radio.openWritingPipe(address);
+  radio.openReadingPipe(1, address2);
+  radio.setPALevel(RF24_PA_LOW);
+  radio.setDataRate(RF24_250KBPS);
+  radio.stopListening();
+}
+
+void loop(){
+  int xVal = analogRead(xPin);
+  int yVal = analogRead(yPin);
+  int swVal = digitalRead(SW_pin);
+  swVal = (swVal == LOW) ? 0 : 1;
+
+  int data[3] = {xVal, yVal, swVal};
+
+if(radio.available()){
+  radio.startListening();
+}
+else{
+  radio.stopListening();
+  radio.write(&data, sizeof(data));
+}
+
+  radio.startListening();
+  unsigned long timeout = millis() + 100;
+  bool gotAlert = false;
+
+  while(millis() < timeout){
+    char receivedMessage[32] = {0};
+    if(radio.available()){
+      radio.read(&receivedMessage, sizeof(receivedMessage));
+      Serial.print("Alert received: ");
+      Serial.println(receivedMessage);
+      lcd.clear();
+
+        if(strchr(receivedMessage, ',')){
+          lcd.setCursor(0, 0);
+          lcd.print(receivedMessage);
+        } else {
+          lcd.setCursor(0, 0);
+          lcd.print(receivedMessage);
+        }
+
+        strncpy(currentAlert, receivedMessage, 32);
+        lastAlertTime = millis();
+        alertActive = true;
+        gotAlert = true;
+    }
+  }
+
+  if(alertActive && millis() - lastAlertTime > 10000){
+    lcd.clear();
+    alertActive = false;
+  }
+
+  if(!alertActive){
+    char line3[21];
+    sprintf(line3, "X:%4d Y:%4d", xVal, yVal);
+    lcd.setCursor(0, 2);
+    lcd.print(line3);
+
+    lcd.setCursor(0, 3);
+    lcd.print("SW:");
+    lcd.print(swVal ? "MANUAL " : "AUTO  ");
+  }
+}
