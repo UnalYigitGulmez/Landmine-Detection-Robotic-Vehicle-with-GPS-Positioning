@@ -1,0 +1,306 @@
+// === LANDMINE DETECTION ROBOT WITH GPS POSITIONING ===
+
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+#include <avr/wdt.h>  
+
+// ====== NRF24L01 Setup ======
+RF24 radio(6, 7); // CE, CSN
+const byte address[6] = "EG123";   // RECIEVE ADDRESS
+const byte address2[6] = "EG321";  // TRANSMIT ADDRESS
+
+// ====== DC Motor Setup ======
+int IN1 = 2, IN2 = 3, IN3 = 4, IN4 = 5, ENB = 9;
+
+// ====== GPS Setup ======
+SoftwareSerial gpsSerial(A4, A3);
+TinyGPSPlus gps;
+float startLat = 0, startLng = 0;
+bool gpsReady = false;
+
+// ====== Ultrasonic Setup ======
+#define trigPin A2
+#define echoPin A1
+
+// ====== Metal Detector Setup ======
+#define pulsepin 10
+#define probepin 8
+#define soundpin A5
+#define resetpin A0
+#define sensitivity 5000
+#define aimtime 160000
+#define cycles 40
+long int phase = 0;
+long int phasemax;
+long int ref = 0; // Global ref
+bool manualMode = true;
+
+// ====== Main Setup ======
+void setup() {
+  Serial.begin(9600);
+  gpsSerial.begin(9600);
+
+  pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
+  analogWrite(ENB, 255);
+  stopMotors();
+
+  radio.begin();
+  radio.openReadingPipe(0, address);
+  radio.openWritingPipe(address2);
+  radio.setPALevel(RF24_PA_LOW);
+  radio.setDataRate(RF24_250KBPS);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  pinMode(pulsepin, OUTPUT); digitalWrite(pulsepin, LOW);
+  pinMode(probepin, INPUT);
+  pinMode(soundpin, OUTPUT); digitalWrite(soundpin, LOW);
+  pinMode(resetpin, INPUT_PULLUP);
+
+  TCCR1A = 0B00100011;
+  TCCR1B = 0B00011001;
+
+  delay(500);
+  ref = averageReference();
+}
+//====== Main Loop ======
+void loop() {
+  radio.startListening();
+  while (gpsSerial.available()) {
+    gps.encode(gpsSerial.read());
+  }
+  if (radio.available()) {
+    int data[3] = {0, 0, 1};
+    radio.read(&data, sizeof(data));
+    int xVal = data[0], yVal = data[1], swVal = data[2];
+    Serial.println(xVal);
+    Serial.println(yVal);
+    Serial.println(swVal);
+
+    if(swVal==0){
+      bool manualMode = false;
+      autoMovement();
+    }
+   
+    if (manualMode) {
+      if (xVal > 340 && xVal < 700 && yVal > 340 && yVal < 700) stopMotors();
+      else if (xVal > 700 && getDistanceCM() > 30) forward();
+      else if (xVal < 340) backward();
+      else if (yVal < 340) left();
+      else if (yVal > 700) right();
+    }
+  }
+  metalDetectorLoop();
+}
+
+long averageReference() {
+  long total = 0;
+  for (int i = 0; i < 10; i++) {
+    total += meas(16000, 8000, 8001, 1, 16);
+    delay(10);
+  }
+  return total / 10;
+}
+
+void metalDetectorLoop() {
+  noInterrupts();
+  long val = meas(16000, 8000, 8001, 1, 16);
+  interrupts();
+
+  int threshold = ref / sensitivity;
+  phasemax = 16000000 / 16000 * threshold;
+
+  int diff = val - ref;
+  
+  int absdiff = abs(diff);
+  
+  if (digitalRead(resetpin) == LOW) ref = averageReference();
+
+  if (absdiff < threshold) {
+    phase = 0;
+    if (diff > 0) ref++;
+    if (diff < 0) ref--;
+  }
+
+  if (diff < -5) {
+    Serial.println("Metal Detected");
+    Serial.println(diff);
+    sendAlert("Metal Detected");
+    bool manualMode = true;
+    for (int i = 0; i < 40; i++) {
+      digitalWrite(soundpin, HIGH); delay(50);
+      digitalWrite(soundpin, LOW); delay(50);
+    }
+    delay(1000);
+    sendGPS();
+    softwareReset(); 
+  }
+
+  int dist = getDistanceCM();
+  if (dist != 0 && dist < 30 && dist > 19) {
+    Serial.println("Object Detected");
+    bool manualMode = true;
+    Serial.println(dist);
+    sendAlert("Object Detected");
+    softwareReset();
+  }
+}
+
+long int meas(int period, int minlen, int maxlen, int steplen, int nloop) {
+  long int sum = 0;
+  int nmiss = 0;
+  OCR1A = period;
+  TIFR1 |= 0B00000001;
+  for (int iloop = 0; iloop < nloop; iloop++) {
+    for (int len = minlen; len < maxlen; len += steplen) {
+      OCR1B = len;
+      while ((TIFR1 & 0B00000001) == 0);
+      TIFR1 |= 0B00000001;
+      while (TCNT1 < (period - cycles));
+      if ((TIFR1 & 0B00100000) != 0) {
+        sum += (ICR1 - len);
+        TIFR1 |= 0B00100000;
+      } else {
+        nmiss++;
+      }
+      phase += abs(sum);
+      if (phase > phasemax) {
+        phase -= phasemax;
+        PORTB = (PORTB ^ 0B00100000);
+      }
+    }
+  }
+  if (nmiss > 0) sum = 0;
+  return sum;
+}
+
+void stopMotors() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
+}
+void forward() {
+  digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
+}
+void backward() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH);
+}
+void left() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
+}
+void right() {
+  digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH);
+}
+
+void Aforward() {
+  digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
+  for(int i=55;i>1;i--){metalDetectorLoop();}
+}
+void Abackward() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH);
+}
+void Aleft() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
+  for(int i=15;i>1;i--){metalDetectorLoop();}
+}
+void Aright() {
+  digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH);
+  for(int i=15;i>1;i--){metalDetectorLoop();}
+}
+
+void autoMovement(){
+  
+  delay(5);
+  for(int step=0;step<2;step++){
+    Aforward();
+    Aright();
+    Aforward();
+    Aright();
+    Aforward();
+    Aleft();
+    Aforward();
+    Aleft();
+  }
+  
+  bool manualMode = true;
+}
+
+void softwareReset() {
+  wdt_enable(WDTO_15MS);  
+}
+
+void sendAlert(const char* message) {
+  stopMotors();
+  radio.stopListening();
+  delay(5);
+
+  char payload[32] = {0};
+  strncpy(payload, message, sizeof(payload) - 1);
+
+  bool success = radio.write(&payload, sizeof(payload));
+  if (success) {
+    Serial.print("Alert sent: "); Serial.println(message);
+  } else {
+    Serial.println("Failed to send alert");
+  }
+
+  delay(5);
+  radio.startListening();
+}
+void sendGPS() {
+  stopMotors();
+  radio.stopListening();
+  delay(5);
+  float lat = gps.location.lat();
+  float lng = gps.location.lng();
+  char latBuffer[15], lngBuffer[15];
+  dtostrf(lat, 8, 5, latBuffer); 
+  dtostrf(lng, 8, 5, lngBuffer);
+
+  char gpsMessage[64];
+  char Message1[32];
+
+  delay(250);
+  sprintf(Message1, "Metal Mine Detected ");
+  radio.write(&Message1, sizeof(Message1));
+  delay(250);
+  sprintf(Message1, "etal Mine Detected a");
+  radio.write(&Message1, sizeof(Message1));
+  delay(250);
+  sprintf(Message1, "tal Mine Detected at");
+  radio.write(&Message1, sizeof(Message1));
+  delay(250);
+  sprintf(Message1, "al Mine Detected at ");
+  radio.write(&Message1, sizeof(Message1));
+  delay(250);
+  sprintf(Message1, "l Mine Detected at -");
+  radio.write(&Message1, sizeof(Message1));
+  delay(250);
+  sprintf(Message1, " Mine Detected at ->");
+  radio.write(&Message1, sizeof(Message1));
+  delay(1000);
+  sprintf(gpsMessage, "GPS:%s            %s", latBuffer, lngBuffer);
+  radio.write(&gpsMessage, sizeof(gpsMessage));
+  delay(5000);
+  radio.startListening();
+}
+
+int getDistanceCM() {
+  digitalWrite(trigPin, LOW); delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH); delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH, 25000);
+  return duration * 0.034 / 2;
+}
