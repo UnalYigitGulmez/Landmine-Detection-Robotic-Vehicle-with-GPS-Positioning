@@ -1,5 +1,7 @@
 <img width="547" height="729" alt="image" src="https://github.com/user-attachments/assets/cdb3abd0-852d-4ae8-aee4-123f6bb01c8b" />
 
+<img width="636" height="520" alt="image" src="https://github.com/user-attachments/assets/1a86109d-fb5b-405d-836f-2774cea5645c" />
+
 
 # Landmine-Detection-Robotic-Vehicle-with-GPS-Positioning
 A robot that can detect iron mines manually and automatically.
